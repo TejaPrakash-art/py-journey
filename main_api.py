@@ -1,16 +1,24 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
-import sqlite3
+from sqlalchemy.orm import Session
+import models
+from database import SessionLocal, engine
+
+# Create the tables in the database (if they don't exist)
+models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
 
-# --- 1. Database Setup ---
+# --- 1. Database Dependency ---
+# This function gives each request its own database session, then closes it
 def get_db():
-    # Connect to the same database we created in the SQL lesson
-    return sqlite3.connect("test.db")
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 # --- 2. Data Models ---
-# This tells FastAPI exactly what data to expect when a user is created
 class UserCreate(BaseModel):
     name: str
     age: int
@@ -18,26 +26,19 @@ class UserCreate(BaseModel):
 # --- 3. API Endpoints ---
 
 @app.get("/users")
-def get_users():
-    conn = get_db()
-    # row_factory lets us access columns by name (e.g., user['name']) instead of index (user[1])
-    conn.row_factory = sqlite3.Row
-    cursor = conn.execute("SELECT * FROM users")
-    users = cursor.fetchall()
-    conn.close()
-    
-    # Convert the database rows to a list of dictionaries for JSON
-    return [dict(u) for u in users]
+def get_users(db: Session = Depends(get_db)):
+    # This is the ORM magic: no SQL strings!
+    users = db.query(models.User).all()
+    return users
 
 @app.post("/users")
-def create_user(user: UserCreate):
-    conn = get_db()
-    cursor = conn.execute(
-        "INSERT INTO users (name, age) VALUES (?, ?)", 
-        (user.name, user.age)
-    )
-    conn.commit()
-    new_id = cursor.lastrowid
-    conn.close()
+def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    # Create a new Python object
+    new_user = models.User(name=user.name, age=user.age)
     
-    return {"message": "User created successfully", "id": new_id, "name": user.name}
+    # Save it to the database
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user) # Get the new ID from the database
+    
+    return {"message": "User created successfully", "user": new_user}
